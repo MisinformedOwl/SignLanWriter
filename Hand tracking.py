@@ -1,18 +1,113 @@
 import cv2               # For image processing
 import mediapipe as mp   # For pretrained and honestly really good model of hand tracking
-#import torch             # For convolutional neural network
+import torch             # For convolutional neural network
+from torch.utils.data import DataLoader, TensorDataset
 import threading         # For the purposes of creating a 5 second delay and then taking a snap shot while not interrupting video playback
 import time              # Needed to measure time
 import pandas as pd      # Used for managing the data
+import sys               # For use in detecting the python version, no idea what version i'd need. But it's better they run the same or a later version assuming nothing gets depricated thats important
+import pickle
+import matplotlib.pyplot as plt
+from modelnetwork import torchNN
+
+#Warn user theit version of python may not work with this script.
+if sys.version_info < (3,8,0):
+  print(f"WARNING: some packages may require python version 3.8 or higher. procede at your own bugs.")
 
 #-----------------------------------------Globals-------------------------------------------------
 
 secondsPerSnap = 5
 snapready = False
 
+#-----------------------------------------Training------------------------------------------------
+
+def train():
+  #Setting up training data to be a torch tensor and under the device
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+  if device.type == "cuda":
+    print("Running on the GPU")
+  elif device.type == "cpu":
+    print("Running on the CPU")
+  
+  dataloader = grabData(device)
+
+  #Create the model
+  model = torchNN().to(device)
+  print(model)
+
+  lr = 0.005
+  epochs = 200
+  loss_crit = torch.nn.CrossEntropyLoss()
+  optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+  history = []
+
+  model.train()
+
+  print("Training".center(50, "-"))
+  print("")
+  for epoch in range(epochs):
+    print("\r", end = "")
+    print(f"Epochs: {epoch+1}/{epochs}".center(50, "-"), end="")
+    optimizer.zero_grad()
+    loss = 0
+    total = 0
+    correct = 0
+    for marks, label in dataloader:
+      result = model(marks)
+      loss+= loss_crit(result,label)
+      for r, l in zip(result, label):
+        r = torch.argmax(r)
+        total+=1
+        if r == l:
+          correct+=1
+    
+    loss.backward()
+    optimizer.step()
+    history.append(correct/total)
+  
+  with open("model.pk", "wb") as file:
+    pickle.dump(model, file)
+  
+  for h in range(len(history)):
+    print(f"{h+1}: {history[h]}")
+  
+  plt.plot(history)
+  plt.show()
+
 #----------------------------------------Functions------------------------------------------------
 
+
+def grabData(device):
+  """
+  This function very simply grabs the data that has been recorded if it is stored. It will also 
+  undergo preprocessing before being sent back to the training function
+  """
+  with open("data.pk", "rb") as file:
+    data = pickle.load(file)
+  
+  #Firstly, seperate the hand positions from the labels
+  labels = []
+  landmarks = []
+  for d in data:
+    if len(d[0]) > 21:
+      continue
+    labels.append(d[1])
+    landmarks.append(d[0])
+  #clear up data
+  del data
+
+  #Assign data into tensors and set the device to the device being used.
+  dataLoader = DataLoader(TensorDataset(torch.tensor(landmarks).to(device),torch.tensor(labels).to(device)), batch_size=16, shuffle=True)
+
+  return dataLoader
+
+
 def timer(cam):
+  """
+  Simple timer function that runs on a thread and ends when the camera closes.
+  Responcible for telling the recordData function when it can get the data by triggering a flag.
+  """
   global snapready
   startTime = time.time()
   while cam.isOpened():
@@ -21,16 +116,36 @@ def timer(cam):
       snapready = True # Set global variable so it can be used in recordData() to trigger an if and grab the data, then set snap back to False
       startTime = t
 
+
 def signGenerator(): # Since i needed to loop through 0-2 for each sign i fancied making a generator
+  """
+  Fancied making a generator for my signlanguage selector, instead of making a while loop where i use 
+  modulation on a value to keep it between 0-2
+  """
   while True:
     for i in range(3):
       yield i
 
+#------------------------------------Data Collection---------------------------------------------
+
+
 def recordData():
+  """
+This method manages opening the camera and grabbing the data.
+It does this by displaying a word on the camera screen which tells the user what sign to perform.
+Then, after 5 seconds, which is ample time to position around the room to gather a variety of 
+data it will take the cordinates of all landmarks of the hand which will be used as the training data.
+"""
   global snapready # For some reason this global doesn't like when it doesnt get global'd like this.
 
   #The signs to be recorded
-  signlist = ["No", "Eagle", "Easily"]
+  signlist = []
+  with open("signs.txt", "r") as file:
+      while True:
+          word = file.readline()
+          if word == "":
+              break
+          signlist.append(word.rstrip())
   currSign = 0
   snap = False
 
@@ -89,32 +204,20 @@ def recordData():
             for id, mark in enumerate(hand_landmarks.landmark):
               allLandMarks.append([mark.x, mark.y, mark.z])
         if snap:
-          data.append([allLandMarks, signlist[currSign]])
+          data.append([allLandMarks, currSign])
       if snap:
         snap = False
       
       #Add on video message to show what sign to do next.
       cv2.putText(image, f"{signlist[currSign]}", (0,50), font, fontscale, (255,255,255), thickness, cv2.LINE_AA)
 
-      # Flip the image horizontally
       cv2.imshow('MediaPipe Hands', image)
-      if cv2.waitKey(5) & 0xFF == 27:
+      if cv2.waitKey(5) & 0xFF == 27: # esc pressed
         break
   
   cap.release()
   return data
 #-------------------------------------------Main-------------------------------------------------
-
-#Firstly i need to create the neural network and use the GPU if available because why not.
-#Start using GPU if available
-"""
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-if device.type == "cuda":
-  print("Running on the GPU")
-elif device.type == "cpu":
-  print("Running on the CPU")
-""" # Temp until i setup torch
 
 #Check if user wants to record images or train the data.
 training = 0
@@ -131,9 +234,8 @@ while True:
 
 if training == 0:
   data = recordData()
+  with open("data.pk", "wb") as file:
+    pickle.dump(data, file)
 elif training == 1:
-  pass # When I get the data recording properly then it's time to setup the torch function. Should be quite standard.
+  train()
 
-data = pd.DataFrame(data, columns=["landmark Cords", "Sign"])
-
-print(data.head())
