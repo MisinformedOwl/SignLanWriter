@@ -37,7 +37,7 @@ This will run the model training and afterwards you will recieve a graph of the 
 
 <img width="636" height="551" alt="image" src="https://github.com/user-attachments/assets/143e32a0-a963-44b1-b33d-7e78a428d1f0" />
 
-Should the result be unsatisfactory. You can play around with the ```lr``` and ```epoch```s until you are satisfied.
+Should the result be unsatisfactory. You can play around with the ```lr``` and ```epochs``` until you are satisfied.
 
 ### Step 5
 
